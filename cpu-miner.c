@@ -237,48 +237,14 @@ char *rpc_user_original = NULL;
 char *rpc_pass_original = NULL;
 char *rpc_url_original = NULL;
 
-// Data about dev wallets.
-// idx 0 - Ausminer
-// idx 1 - Delgon
-const uint8_t max_idx = 9;
-uint8_t donation_url_idx[2] = {0, 0};
-char *donation_url_pattern[2][9] = {
-    {"flockpool", "flockpool", "flockpool", "flockpool", "p2pool", "r-pool",
-     "suprnova", "ausminers", "rplant"},
-    {"flockpool", "flockpool", "flockpool", "flockpool", "p2pool", "r-pool",
-     "suprnova", "ausminers", "rplant"}};
-char *donation_url[2][9] = {
-    {"stratum+tcp://eu.flockpool.com:4444",
-     "stratum+tcp://us-west.flockpool.com:4444",
-     "stratum+tcp://us.flockpool.com:4444",
-     "stratum+tcp://asia.flockpool.com:4444", "stratum+tcp://p2pool.co:3032",
-     "stratum+tcp://r-pool.net:3032", "stratum+tcp://rtm.suprnova.cc:6273",
-     "stratum+tcp://rtm.ausminers.com:3001",
-     "stratum+tcp://stratum-eu.rplant.xyz:7056"},
-    {"stratum+tcp://eu.flockpool.com:4444",
-     "stratum+tcp://us-west.flockpool.com:4444",
-     "stratum+tcp://us.flockpool.com:4444",
-     "stratum+tcp://asia.flockpool.com:4444", "stratum+tcp://p2pool.co:3032",
-     "stratum+tcp://r-pool.net:3032", "stratum+tcp://rtm.suprnova.cc:6273",
-     "stratum+tcp://rtm.ausminers.com:3001",
-     "stratum+tcp://stratum-eu.rplant.xyz:7056"}};
-char *donation_userRTM[2] = {"RXq9v8WbMLZaGH79GmK2oEdc33CTYkvyoZ",
-                             "RQKcAZBtsSacMUiGNnbk3h3KJAN94tstvt"};
-char *donation_userBUTK[2] = {"XdFVd4X4Ru688UVtKetxxJPD54hPfemhxg",
-                              "XeMjEpWscVu2A5kj663Tqtn2d7cPYYXnDN"};
-char *donation_userWATC[2] = {"WjHH1J6TwYMomcrggNtBoEDYAFdvcVACR3",
-                              "WYv6pvBgWRALqiaejWZ8FpQ3FKEzTHXj7W"};
+
 volatile bool switching_sctx_data = false;
-bool enable_donation = true;
-double donation_percent = 1.75;
-int dev_turn = 1;
+
+
 int turn_part = 2;
 bool dev_mining = false;
 bool switched_stratum = false;
 
-long donation_wait = 4800;
-long donation_time_start = 0;
-long donation_time_stop = 0;
 
 // conditional mining
 bool conditional_state[MAX_CPUS] = {0};
@@ -1089,26 +1055,8 @@ static bool is_stale_share(struct work *work) {
   return false;
 }
 
-static void ensure_proper_times() {
-  // Check if times are correct. Could be possible that there is a huge
-  // shift in times if there was a long connection problems.
-  // Allow for up to 60s slip in times.
-  long now = time(NULL);
-  if ((int)(donation_time_stop - now) < -60 ||
-      (int)(donation_time_start - now) < -60) {
-    if (donation_time_stop > donation_time_start) {
-      // The user was mining at the time. Can lead to switch to donation.
-      donation_time_start = now;
-      donation_time_stop = now + 600;
-    } else {
-      // Donating. Can lead to switch to user.
-      donation_time_stop = now;
-      donation_time_start = now + 600;
-    }
-  }
-}
 
-static bool donation_connect();
+
 
 static bool stratum_check(bool reset) {
   pthread_mutex_lock(&stratum_lock);
@@ -1209,20 +1157,7 @@ static bool stratum_check(bool reset) {
         tq_push(thr_info[work_thr_id].q, NULL);
         pthread_mutex_unlock(&stratum_lock);
         return false;
-      } else if (failures >= 4 && dev_mining) {
-        // This should prevent stratum recheck during Dev fee.
-        // If there is a problem with dev fee stratum and the miner is currently
-        // collecting it, it can loop infinitely until dev fee stratum comes
-        // back alive. It should exit as maybe dev fee ended and user pool
-        // could work if there was a stratum switch.
-        pthread_mutex_unlock(&stratum_lock);
-        if (dev_mining) {
-          applog(LOG_INFO,
-                 "Detected problem with stratum while collecting dev fee");
-        }
-        donation_connect();
-        return true;
-      }
+      } 
       if (!opt_benchmark) {
         restart_threads();
         applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
@@ -1230,9 +1165,6 @@ static bool stratum_check(bool reset) {
       // Extend mining times for the time there was the disconnection.
       // +20 is from CURL connecttimeout.
       // +2 failsafe.
-      donation_time_stop += opt_fail_pause + 20 + 3;
-      donation_time_start += opt_fail_pause + 20 + 3;
-      ensure_proper_times();
       sleep(opt_fail_pause);
     } else {
       restart_threads();
@@ -1244,209 +1176,14 @@ static bool stratum_check(bool reset) {
   return true;
 }
 
-static bool check_same_stratum() {
-  // If user's wallet is for non RTM like BUTK or WATC, then none of the
-  // dev stratum will match with user's stratum. Also check if the wallet
-  // matches the RTM address size.
-  if (strncmp(rpc_user_original, "R", 1) != 0) {
-    return false;
-  }
-  for (int i = 0; i < max_idx; i++) {
-    // Check if user pool matches any of the dev pools.
-    if (strstr((url_backup && rpc_url_backup != NULL) ? rpc_url_backup
-                                                      : rpc_url_original,
-               donation_url_pattern[dev_turn][i]) != NULL) {
-      if (opt_debug) {
-        applog(LOG_DEBUG, "Found matching stratum. Do not switch. %s in %s",
-               donation_url_pattern[dev_turn][i],
-               (url_backup && rpc_url_backup != NULL) ? rpc_url_backup
-                                                      : rpc_url_original);
-      }
-      return true;
-    }
-  }
-  if (opt_debug) {
-    applog(LOG_DEBUG, "Matching stratum not found in %s", rpc_url);
-  }
-  return false;
-}
 
-static void donation_data_switch(int dev, bool only_wallet) {
-  free(rpc_user);
-  free(rpc_pass);
-  if (donation_url_idx[dev] < max_idx) {
-    rpc_user = strdup(donation_userRTM[dev]);
-    if (!only_wallet) {
-      free(rpc_url);
-      rpc_url = strdup(donation_url[dev][donation_url_idx[dev]]);
-    }
-    rpc_pass = strdup("x");
-  } else {
-    // Use user pool if necessary none of the dev pools work.
-    if (!only_wallet) {
-      free(rpc_url);
-      rpc_url = strdup(rpc_url_original);
-    }
-    // Check if user is mining RTM.
-    if (strlen(rpc_user_original) >= 34) {
-      if (strncmp(rpc_user_original, "R", 1) == 0) {
-        rpc_user = strdup(donation_userRTM[dev]);
-      } else if (strncmp(rpc_user_original, "W", 1) == 0) {
-        rpc_user = strdup(donation_userWATC[dev]);
-      } else if (strncmp(rpc_user_original, "X", 1) == 0) {
-        rpc_user = strdup(donation_userBUTK[dev]);
-      }
-    } else {
-      rpc_user = strdup(donation_userRTM[dev]);
-    }
-    rpc_pass = strdup("x");
-  }
-  short_url = &rpc_url[sizeof("stratum+tcp://") - 1];
-}
 
-static bool donation_connect() {
-  pthread_mutex_lock(&stratum_lock);
 
-  while (true) {
-    switched_stratum = true;
 
-    // Reset stratum.
-    stratum_disconnect(&stratum);
-    free(stratum.url);
-    stratum.url = strdup(rpc_url);
-    applog(LOG_BLUE, "Connection changed to: %s",
-           &rpc_url[sizeof("stratum+tcp://") - 1]);
-    s_get_ptr = s_put_ptr = 0;
 
-    pthread_rwlock_wrlock(&g_work_lock);
-    g_work_time = 0;
-    pthread_rwlock_unlock(&g_work_lock);
-    request_id = 5;
-    if (!stratum_connect(&stratum, stratum.url) ||
-        !stratum_subscribe(&stratum) ||
-        !stratum_authorize(&stratum, rpc_user, rpc_pass)) {
-      stratum_disconnect(&stratum);
-      sleep(2);
-    } else {
-      restart_threads();
-      applog(LOG_BLUE, "Stratum connection established");
-    }
 
-    if (stratum.curl != NULL) {
-      // Connection established.
-      pthread_mutex_unlock(&stratum_lock);
-      if (donation_url_idx[dev_turn] == max_idx) {
-        // Reset pool rotation.
-        donation_url_idx[dev_turn] = 0;
-      }
 
-      return true;
-    } else {
-      // If something went wrong while dev mining, switch pool.
-      applog(LOG_WARNING, "Dev pool switch problem. Trying next one.");
-      donation_url_idx[dev_turn]++;
-      if (donation_url_idx[dev_turn] < max_idx) {
-        // Dev turn already increased. Use "current" dev.
-        donation_data_switch(dev_turn, false);
-      } else {
-        // Could not connect to any dev fee pools and user pool is also
-        // unresponsive.
-        applog(LOG_WARNING, "Unable to collect Dev fee. Skipping dev fee.");
-        // Reset stratum idx. Maybe it will be able to connect later.
-        donation_url_idx[dev_turn] = 0;
-        pthread_mutex_unlock(&stratum_lock);
-        return false;
-      }
-    }
-  }
-}
 
-static bool uses_flock() {
-#ifdef __MINGW32__
-  return strstr
-#else
-  return strcasestr
-#endif
-      ((url_backup && rpc_url_backup != NULL) ? rpc_url_backup
-                                              : rpc_url_original,
-       "flockpool");
-}
-
-static void donation_switch() {
-  long now = time(NULL);
-  if (donation_time_start <= now) {
-    applog(LOG_BLUE, "Dev Fee Start");
-    dev_mining = true;
-    switching_sctx_data = true;
-
-    if (donation_url_idx[dev_turn] < max_idx && !check_same_stratum()) {
-      donation_data_switch(dev_turn, false);
-      if (!donation_connect()) {
-        donation_time_stop = now - 5;
-        donation_time_start = time(NULL) + donation_wait;
-        switched_stratum = true;
-        sleep(60);
-        // This should switch to user settings.
-        donation_switch();
-        switching_sctx_data = false;
-        return;
-      }
-    } else {
-      // Using user pool. Just switch wallet address.
-      donation_data_switch(dev_turn, true);
-    }
-
-    donation_percent = donation_percent < 1.75 ? 1.75 : donation_percent;
-    if (dev_turn == 1) {
-      donation_time_stop =
-          time(NULL) +
-          (donation_wait / 100.0 *
-           (donation_percent - (uses_flock() ? (5. / 4. * 0.25) : 0.0)));
-    } else {
-      donation_time_stop =
-          time(NULL) + (donation_wait / 100.0 * donation_percent);
-    }
-    // This will change to the proper value when dev fee stops.
-    donation_time_start = now + donation_wait * 2.0;
-
-    if (dev_turn == 1) {
-      turn_part = (turn_part + 1) % 4;
-      if (turn_part == 0) {
-        dev_turn = (dev_turn + 1) % 2; // Rotate between devs.
-      }
-    } else {
-      dev_turn = (dev_turn + 1) % 2; // Rotate between devs.
-    }
-  } else if (donation_time_stop <= now) {
-    applog(LOG_BLUE, "Dev Fee Stop");
-    dev_mining = false;
-    switching_sctx_data = true;
-    donation_time_start = now + donation_wait - (donation_percent * 60);
-    // This will change to the proper value when dev fee starts.
-    donation_time_stop = donation_time_start + donation_wait * 2.0;
-
-    free(rpc_user);
-    rpc_user = strdup(rpc_user_original);
-    free(rpc_pass);
-    rpc_pass = strdup(rpc_pass_original);
-
-    // Make sure to switch stratums after stratum donation switch.
-    // Go back to original stratum if switched to backup in the meantime.
-    // MAKE SURE rpc_url is matching user rpc and backup 100%.
-    if (switched_stratum || // If switched stratum during donation.
-        (url_backup && rpc_url_backup != NULL) || // If switched to backup.
-        !(strcmp(rpc_url, rpc_url_original) == 0 ||
-          (rpc_url_backup != NULL && strcmp(rpc_url, rpc_url_backup) == 0))) {
-      free(rpc_url);
-      rpc_url = strdup(rpc_url_original);
-      short_url = &rpc_url[sizeof("stratum+tcp://") - 1];
-      url_backup = false; // Went back to OG pool.
-      stratum_check(true);
-    }
-    switched_stratum = false;
-  }
-  switching_sctx_data = false;
-}
 
 // Some pools have problems with special characters and only
 // allow for alphanumeric.
@@ -3243,18 +2980,12 @@ static void *stratum_thread(void *userdata) {
     memcpy(&five_min_start, &last_submit_time, sizeof(struct timeval));
     memcpy(&session_start, &last_submit_time, sizeof(struct timeval));
     memcpy(&hashrate_start, &last_submit_time, sizeof(struct timeval));
-    donation_time_start = time(NULL) + 15 + (rand() % 60);
-    donation_time_stop = donation_time_start + 6000;
+    
   }
 
   applog(LOG_BLUE, "Stratum connect %s", rpc_url);
 
-  if (check_same_stratum()) {
-    donation_wait = 3600;
-  }
-
   while (1) {
-    donation_switch();
 
     if (!stratum_check(false)) {
       // Only if opt_retries are set and not dev_mining.
@@ -3296,8 +3027,7 @@ static void show_credits() {
   printf("     A CPU miner with multi algo support and optimized for CPUs\n");
   printf("     with AVX512, SHA and VAES extensions by JayDDee.\n");
   printf("     with Ghostrider Algo by Ausminer & Delgon.\n");
-  printf("     Jay D Dee's BTC donation address: "
-         "12tdvfF7KmAsihBXQXynT6E6th2c2pByTT\n\n");
+  printf("     \n\n");
 }
 
 #define check_cpu_capability() cpu_capability(false)
@@ -3805,19 +3535,6 @@ void parse_arg(int key, char *arg) {
   case 'y': // no-msr
     // CPU Disable Hardware prefetch.
     opt_set_msr = false;
-    break;
-  case 'd':
-    // Adjust donation percentage.
-    d = atof(arg);
-    if (d > 100.0) {
-      donation_percent = 100.0;
-      applog(LOG_NOTICE, "Setting to the maximum donation fee of 100%%");
-    } else if (d < 1.75) {
-      donation_percent = 1.75;
-      applog(LOG_NOTICE, "Setting to the mininmum donation fee of 1.75%%");
-    } else {
-      donation_percent = d;
-    }
     break;
   case 1025: // retry-pause
     v = atoi(arg);
@@ -4351,18 +4068,11 @@ int main(int argc, char *argv[]) {
   // Get the time with random start
   parse_cmdline(argc, argv);
 
-  donation_time_start = now + 15 + (rand() % 30);
-  donation_time_stop = donation_time_start + 6000;
-  // Switch off donations if it is not using GR Algo
-  if (opt_algo != ALGO_GR) {
-    enable_donation = false;
-  } else if (!opt_benchmark) {
+  
+  
+  if (!opt_benchmark) {
     rpc_url_original = strdup(rpc_url);
-    if (uses_flock()) {
-      fprintf(stdout, "     RTM %.2lf%% Fee\n\n", donation_percent - 0.25);
-    } else {
-      fprintf(stdout, "     RTM %.2lf%% Fee\n\n", donation_percent);
-    }
+   
   }
 
   if (!register_algo_gate(opt_algo, &algo_gate))
@@ -4743,10 +4453,6 @@ int main(int argc, char *argv[]) {
     }
   }
 #endif
-  if (opt_algo == ALGO_GR) {
-    donation_percent = (donation_percent < 1.75) ? 1.75 : donation_percent;
-    enable_donation = true;
-  }
 
   work_restart =
       (struct work_restart *)calloc(opt_n_threads, sizeof(*work_restart));
@@ -4869,10 +4575,7 @@ int main(int argc, char *argv[]) {
   applog(LOG_INFO, "%d of %d miner threads started using '%s' algorithm",
          opt_n_threads, num_cpus, algo_names[opt_algo]);
 
-  if (opt_algo == ALGO_GR) {
-    donation_percent = (donation_percent < 1.75) ? 1.75 : donation_percent;
-    enable_donation = true;
-  }
+  
   /* main loop - simply wait for workio thread to exit */
   pthread_join(thr_info[work_thr_id].pth, NULL);
   applog(LOG_WARNING, "workio thread dead, exiting.");

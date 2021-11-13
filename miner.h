@@ -596,18 +596,9 @@ extern uint8_t prefetch_tune[40];
 extern uint8_t *used_threads;
 extern bool opt_tune_simple;
 extern bool opt_tune_full;
-extern bool enable_donation;
-extern double donation_percent;
-extern char *donation_userRTM[2];
-extern char *donation_userBUTK[2];
-extern bool enable_donation;
 extern bool dev_mining;
 extern bool stratum_problem;
-extern long donation_wait;
 extern bool switched_stratum;
-extern double donation_percent;
-extern long donation_time_start;
-extern long donation_time_stop;
 extern char *opt_tuneconfig_file;
 extern char *opt_log_file;
 extern FILE *log_file;
@@ -676,7 +667,7 @@ Options:\n\
       --verify          enable additional time consuming start up tests\n\
       --version         display version information and exit\n\
       --log=FILE        path to the file that will include a copy of miner output. File is not cleared after restart.\n\
-  -d, --donation=VAL    donation value in %%. Default is 1.75\n"
+      \n"
 #ifdef __AES__
                             "\
   -y  --no-msr          disable application of MSR mod on the system\n"
